@@ -1,0 +1,69 @@
+# Shared defaults for every service. Imported from each service's application.yml with
+#   spring.config.import: classpath:messaging-defaults.yml
+# Service-specific values (port, database, application name) live in the service's own file.
+
+spring:
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all                       # wait for the broker to persist the record
+      properties:
+        enable.idempotence: true      # the producer itself never creates duplicates on retry
+    consumer:
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      auto-offset-reset: earliest     # a brand-new consumer group reads from the beginning
+      enable-auto-commit: false       # offsets are committed manually, after processing
+    listener:
+      ack-mode: manual                # listeners call Acknowledgment.acknowledge()
+      concurrency: 3                  # one consumer thread per partition
+      observation-enabled: true       # extract the "traceparent" header -> continue the trace
+  flyway:
+    # Shared outbox/processed_events tables first, then the service's own migrations.
+    locations: classpath:db/messaging,classpath:db/migration
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate              # the schema is owned by Flyway, Hibernate only checks it
+
+outbox:
+  poll-interval-ms: ${OUTBOX_POLL_INTERVAL_MS:500}
+  batch-size: 50
+
+messaging:
+  retry:
+    max-retries: 4                    # redeliveries after the first failure
+    initial-interval-ms: 1000
+    multiplier: 2.0
+    max-interval-ms: 10000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  tracing:
+    sampling:
+      probability: 1.0                # trace every request: fine for a demo, lower in production
+
+logging:
+  level:
+    org.apache.kafka: WARN
+    org.apache.kafka.clients.NetworkClient: ERROR
+    org.hibernate.orm.deprecation: ERROR
+  pattern:
+    # time level [traceId] [orderId] logger : message
+    console: "%d{HH:mm:ss.SSS} %5p [%X{traceId:-}] [order=%X{orderId:-}] %-28.28logger{27} : %m%n"
+
+---
+# Activate with SPRING_PROFILES_ACTIVE=json-logs to get one JSON object per line (for log aggregators).
+spring:
+  config:
+    activate:
+      on-profile: json-logs
+logging:
+  structured:
+    format:
+      console: logstash
