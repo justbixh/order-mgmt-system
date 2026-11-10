@@ -7,6 +7,8 @@ x-service-env: &service-env
   KAFKA_BOOTSTRAP_SERVERS: kafka:29092
   DB_HOST: postgres
   OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
+  # Jaeger only ingests traces; without this the OTLP meter registry retries localhost:4318 and spams warnings.
+  MANAGEMENT_OTLP_METRICS_EXPORT_ENABLED: "false"
   SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-}
 
 services:
