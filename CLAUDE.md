@@ -9,20 +9,25 @@ Event-driven order management: four Spring Boot 4.1 / Java 21 services (order, i
 ```bash
 docker compose up -d postgres kafka kafka-ui jaeger   # infra only (to run services from the IDE)
 docker compose up -d --build                           # infra + all four services
-mvn -DskipTests package                                # build all modules
-mvn test -Dtest='!*IntegrationTest' -Dsurefire.failIfNoSpecifiedTests=false   # unit tests only, no Docker
-mvn test                                               # unit + integration tests (Testcontainers; Docker must be running)
-mvn -pl inventory-service test -Dtest=ReservationServiceTest            # single unit test class
-mvn -pl order-service test -Dtest=OrderSagaIntegrationTest             # single integration test
+# No parent/aggregator pom: every module is a standalone Maven project (parent = spring-boot-starter-parent).
+# Install the shared libraries first, and again after changing them:
+for m in events-contract messaging-support testing-support; do mvn -f $m install -DskipTests; done
+mvn -f order-service -DskipTests package                                 # build one service (likewise the other three)
+mvn -f order-service test -Dtest='!*IntegrationTest' -Dsurefire.failIfNoSpecifiedTests=false   # unit tests only, no Docker
+mvn -f order-service test                                                # unit + integration tests (Testcontainers; Docker must be running)
+mvn -f inventory-service test -Dtest=ReservationServiceTest              # single unit test class
+mvn -f order-service test -Dtest=OrderSagaIntegrationTest               # single integration test
+mvn -f messaging-support test                                            # shared-library unit tests (EventSerdeTest)
 scripts/demo.sh                                        # end-to-end scenarios against running services (needs curl, jq)
 ```
 
-Integration tests are plain JUnit tests named `*IntegrationTest`; they run in the normal test phase, so `mvn test` also needs Docker.
+Integration tests are plain JUnit tests named `*IntegrationTest`; they run in the normal test phase, so `mvn test` also needs Docker. Shared versions (Boot 4.1.2, Java 21, `1.0.0-SNAPSHOT` for the internal libraries, springdoc) are repeated in each module's pom; bump them everywhere together.
 
 ## Architecture (big picture)
 
 - `events-contract`: the wire contract. `EventType` is the registry mapping each event to its topic and payload class; `EventEnvelope.wrap(payload)` builds the envelope. Adding an event = payload record + one `EventType` line.
 - `messaging-support`: auto-configured plumbing used by every service (see `MessagingAutoConfiguration`): `OutboxService` (write event in the business transaction), `OutboxPublisher` (scheduled poll with `FOR UPDATE SKIP LOCKED`, forwards a stored `traceparent` header), `IdempotentEventProcessor` (`processed_events` insert + handler in one transaction), `EventDispatcher` (parse, MDC, idempotency), `KafkaErrorHandlingConfig` (backoff + `.DLT`). Shared defaults come from `messaging-defaults.yml`, imported by each service via `spring.config.import`. Shared tables come from Flyway migration `db/messaging/V0_1__...sql` (service migrations are V1+).
+- `testing-support` (test scope): `ContainersConfig` (Testcontainers Postgres + Kafka via `@ServiceConnection`) and `KafkaTestClient` (`send` raw JSON to a topic, `readUntil` a predicate matches or a timeout) used by every `*IntegrationTest`.
 - Each service: a `@KafkaListener` (manual ack, calls `dispatcher.dispatch(...)` then `ack.acknowledge()`), a handler with a pattern-matching `switch` on the payload type, domain logic, REST controllers.
 - Saga: Order publishes `OrderCreated` → Inventory `InventoryReserved`/`...Failed` → Payment `PaymentSucceeded`/`PaymentFailed` → Order confirms or cancels. `OrderCancelled` is the single compensation trigger (Inventory releases, Payment refunds). Handlers must tolerate duplicate, late and cross-topic out-of-order events (check current status first).
 - Business failures (decline, out of stock) are events; technical failures (gateway outage) are exceptions that go through retry then DLT.
@@ -31,7 +36,7 @@ Integration tests are plain JUnit tests named `*IntegrationTest`; they run in th
 
 - Spring Boot 4 / Jackson 3: JSON classes are `tools.jackson.*` (`JsonMapper`, `asString()`), test annotations live in new packages (e.g. `org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc`).
 - Hibernate runs with `ddl-auto: validate`: entity column types must match the Flyway SQL exactly (e.g. use `VARCHAR(3)`, not `CHAR(3)`). Editing an applied migration breaks Flyway checksums on existing databases; reset with `docker compose down -v`.
-- The shell used here may have `noclobber` set: use `>|` to overwrite files from scripts.
+- The shell used here may have `noclobber` set: use `>|` to overwrite files from scripts. `rm` is aliased to `trash` (rejects `-rf`); use `/bin/rm`.
 - Consumer group id = service name (`order-service`, etc.); topics `order-events`, `inventory-events`, `payment-events` (3 partitions, keyed by orderId) plus `<topic>.DLT` (1 partition) are created at startup by `NewTopic` beans in `MessagingAutoConfiguration`, not by Compose. Ports: services 8081-8084, Kafka 9092 (host) / 29092 (containers), Postgres 5432, Kafka UI 8090, Jaeger 16686.
 - Each service's DB user/password equals its database name (`orders`, `inventory`, `payments`, `notifications`), created by `infra/init-databases.sh` only when the Postgres volume is first created.
 - Jaeger only ingests traces. Compose points trace export at `http://jaeger:4318/v1/traces` and disables OTLP metrics export (`MANAGEMENT_OTLP_METRICS_EXPORT_ENABLED=false`); otherwise the meter registry logs `Failed to publish metrics to OTLP receiver` (ConnectException to `localhost:4318`) on every interval.

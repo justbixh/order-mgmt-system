@@ -47,7 +47,8 @@ Run only the infrastructure and start services from your IDE or Maven:
 
 ```bash
 docker compose up -d postgres kafka kafka-ui jaeger
-mvn -DskipTests package
+for m in events-contract messaging-support testing-support; do mvn -f $m install -DskipTests; done   # shared libraries
+mvn -f order-service -DskipTests package                                                            # likewise the other three
 java -jar order-service/target/order-service-1.0.0-SNAPSHOT.jar      # likewise for the other three
 ```
 
@@ -264,8 +265,10 @@ a `web` package (REST), and Flyway migrations in `src/main/resources/db/migratio
 ## 6. Tests
 
 ```bash
-mvn test -Dtest='!*IntegrationTest' -Dsurefire.failIfNoSpecifiedTests=false   # unit tests only (fast, no Docker)
-mvn test            # unit + integration tests (Testcontainers starts Postgres and Kafka, needs Docker)
+# Each module is an independent Maven project (no parent pom): install the shared libraries first, then test per service.
+for m in events-contract messaging-support testing-support; do mvn -f $m install -DskipTests; done
+mvn -f order-service test -Dtest='!*IntegrationTest' -Dsurefire.failIfNoSpecifiedTests=false   # unit tests only (fast, no Docker)
+mvn -f order-service test   # unit + integration tests (Testcontainers starts Postgres and Kafka, needs Docker)
 scripts/demo.sh     # end-to-end against the running system
 ```
 
@@ -277,7 +280,7 @@ scripts/demo.sh     # end-to-end against the running system
 * **End-to-end:** `scripts/demo.sh` runs happy path, declined payment with compensation, out of stock, customer
   cancellation, idempotency key and the gateway-outage dead-letter path across all four running services.
 
-Run one test: `mvn -pl inventory-service test -Dtest=ReservationServiceTest`.
+Run one test: `mvn -f inventory-service test -Dtest=ReservationServiceTest`.
 
 ## 7. Configuration
 
